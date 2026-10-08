@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "Газета",
+  "version": "0.2.0",
+  "description": "Собирает статьи с открытых страниц и формирует из них газету в формате Word.",
+  "permissions": ["activeTab", "scripting", "storage", "unlimitedStorage"],
+  "action": {
+    "default_title": "Газета",
+    "default_popup": "popup.html",
+    "default_icon": { "16": "icons/16.png", "48": "icons/48.png", "128": "icons/128.png" }
+  },
+  "icons": { "16": "icons/16.png", "48": "icons/48.png", "128": "icons/128.png" },
+  "background": { "service_worker": "background.js" },
+  "commands": {
+    "add-article": {
+      "suggested_key": { "default": "Alt+Q" },
+      "description": "Добавить открытую статью в газету"
+    }
+  }
+}

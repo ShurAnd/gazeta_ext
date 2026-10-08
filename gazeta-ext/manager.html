@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Обзор СМИ — отобранные статьи</title>
+<style>
+  body { margin: 0; font: 15px/1.45 "Segoe UI", Arial, sans-serif; color: #1c1c1c; background: #f4f2ee; }
+  main { max-width: 860px; margin: 0 auto; padding: 24px 16px 60px; }
+  h1 { font: 700 30px Georgia, serif; margin: 0 0 16px; border-top: 4px solid #1c1c1c; border-bottom: 3px double #1c1c1c; padding: 10px 0; }
+  .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
+  label { display: block; font-size: 12px; color: #555; margin-bottom: 3px; }
+  input, textarea { width: 100%; box-sizing: border-box; padding: 8px 10px; font: inherit; border: 1px solid #b9b4aa; border-radius: 6px; background: #fff; }
+  .bar { display: flex; gap: 10px; align-items: center; margin-bottom: 18px; flex-wrap: wrap; }
+  button { padding: 9px 14px; font: inherit; border: 1px solid #1c1c1c; border-radius: 6px; background: #fff; color: #1c1c1c; cursor: pointer; }
+  button.primary { background: #1c1c1c; color: #fff; font-weight: 600; }
+  button:disabled { opacity: .4; cursor: default; }
+  #status { color: #1a7f37; font-size: 14px; }
+  ol { list-style: none; margin: 0; padding: 0; }
+  li { display: flex; gap: 12px; align-items: flex-start; background: #fff; border: 1px solid #ddd8ce; border-radius: 8px; padding: 12px; margin-bottom: 8px; }
+  .num { font: 700 18px Georgia, serif; min-width: 26px; text-align: right; color: #777; }
+  .text { flex: 1; min-width: 0; }
+  .title { width: 100%; font-weight: 600; border-color: transparent; padding: 2px 4px; margin-left: -4px; }
+  .title:hover, .title:focus { border-color: #b9b4aa; }
+  .meta { font-size: 12px; color: #777; margin-top: 2px; overflow-wrap: anywhere; }
+  .meta a { color: inherit; }
+  .preview { font-size: 13px; color: #444; margin-top: 6px; }
+  .ctl { display: flex; gap: 4px; }
+  .ctl button { padding: 4px 9px; }
+  textarea { resize: vertical; font: inherit; }
+  button.link { border: 0; background: none; padding: 4px 0; margin-top: 4px; font-size: 13px; color: #2f5d9a; }
+  .picker .hint { font-size: 12px; color: #777; margin: 4px 0; }
+  .par { font-size: 13px; padding: 6px 8px; margin: 3px 0; border-left: 3px solid #ddd8ce; cursor: pointer; color: #333; }
+  .par:hover { background: #f4f2ee; }
+  .par.on { border-left-color: #4f81bd; color: #4f81bd; font-weight: 600; font-style: italic; background: #eef4fb; }
+  .preview { color: #4f81bd; font-style: italic; }
+  .empty { color: #777; padding: 30px 0; text-align: center; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Обзор публикаций СМИ</h1>
+  <div class="fields">
+    <div><label for="title">Заголовок обзора</label><input id="title"></div>
+    <div><label for="org">Организация (шапка и колонтитул, по строкам)</label><textarea id="org" rows="3"></textarea></div>
+  </div>
+  <div class="bar">
+    <button id="build" class="primary">📰 Сформировать обзор</button>
+    <button id="clear">Очистить список</button>
+    <span id="status"></span>
+  </div>
+  <ol id="list"></ol>
+</main>
+<script src="pool.js"></script>
+<script src="docx.js"></script>
+<script src="manager.js"></script>
+</body>
+</html>
