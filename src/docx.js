@@ -50,17 +50,20 @@ const Docx = (() => {
     b += para("Title", run(p.date, '<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman"/><w:sz w:val="28"/><w:szCs w:val="28"/>'), '<w:ind w:firstLine="0"/>');
 
     // ---------- содержание: источник, заголовок с «Стр.N», выделенные абзацы ----------
-    p.entries.forEach((e, i) => {
-      for (const s of [e.site, e.date]) if (s && s.trim()) b += para("Source", run(s, SMALL));
-      b += para(
-        "Head",
-        `${run(e.title, SMALL)}<w:r><w:rPr>${SMALL}<w:u w:val="single"/></w:rPr><w:tab/></w:r>${run("Стр.", SMALL)}${field(`PAGEREF ${bookmark(i)} \\h`, "", SMALL)}`,
-        `<w:tabs><w:tab w:val="left" w:pos="${PAGE_NO_TAB}"/></w:tabs><w:ind w:right="${TEXT_WIDTH - PAGE_NO_TAB}"/><w:jc w:val="left"/>`
-      );
-      for (const k of e.lead) b += para("Lead", run(e.paragraphs[k], SMALL));
-      b += para("Source");
-    });
-    b += para("Normal") + '<w:p><w:r><w:br w:type="page"/></w:r></w:p>';
+    // (p.toc === false — обзор раздела: содержания нет, статьи идут сразу после шапки)
+    if (p.toc !== false) {
+      p.entries.forEach((e, i) => {
+        for (const s of [e.site, e.date]) if (s && s.trim()) b += para("Source", run(s, SMALL));
+        b += para(
+          "Head",
+          `${run(e.title, SMALL)}<w:r><w:rPr>${SMALL}<w:u w:val="single"/></w:rPr><w:tab/></w:r>${run("Стр.", SMALL)}${field(`PAGEREF ${bookmark(i)} \\h`, "", SMALL)}`,
+          `<w:tabs><w:tab w:val="left" w:pos="${PAGE_NO_TAB}"/></w:tabs><w:ind w:right="${TEXT_WIDTH - PAGE_NO_TAB}"/><w:jc w:val="left"/>`
+        );
+        for (const k of e.lead) b += para("Lead", run(e.paragraphs[k], SMALL));
+        b += para("Source");
+      });
+      b += para("Normal") + '<w:p><w:r><w:br w:type="page"/></w:r></w:p>';
+    }
 
     // ---------- статьи целиком ----------
     p.entries.forEach((e, i) => {
@@ -156,7 +159,7 @@ const Docx = (() => {
   }
 
   /**
-   * p = {title, org, date, entries:[{site, date, author, title, paragraphs:[...], lead:[индексы], heads:[индексы]}]}
+   * p = {title, org, date, toc (false — без содержания), entries:[{site, date, author, title, paragraphs:[...], lead:[индексы], heads:[индексы]}]}
    * -> массив частей для Blob
    */
   function build(p) {

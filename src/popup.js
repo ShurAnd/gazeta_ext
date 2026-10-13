@@ -13,8 +13,8 @@ $("add").addEventListener("click", async () => {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const r = await Pool.addFromTab(tab);
-    status.className = "ok";
-    status.textContent = (r.replaced ? "Обновлено: " : "Добавлено: ") + r.article.title;
+    status.className = r.duplicate ? "dup" : "ok";
+    status.textContent = (r.duplicate ? "Уже в газете: " : "Добавлено: ") + r.article.title;
   } catch (e) {
     status.className = "err";
     status.textContent = e.message;

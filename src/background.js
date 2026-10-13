@@ -18,9 +18,10 @@ chrome.commands.onCommand.addListener(async (command, tab) => {
   if (command !== "add-article") return;
   if (!tab) [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   try {
-    await Pool.addFromTab(tab);
-    await chrome.action.setBadgeBackgroundColor({ color: "#1a7f37" });
-    await chrome.action.setBadgeText({ text: "✓" });
+    const r = await Pool.addFromTab(tab);
+    // «=» — статья уже была в списке и повторно не добавлена
+    await chrome.action.setBadgeBackgroundColor({ color: r.duplicate ? "#b26a00" : "#1a7f37" });
+    await chrome.action.setBadgeText({ text: r.duplicate ? "=" : "✓" });
   } catch (e) {
     await chrome.action.setBadgeBackgroundColor({ color: "#c62828" });
     await chrome.action.setBadgeText({ text: "!" });

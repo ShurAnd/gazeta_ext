@@ -117,39 +117,33 @@
     return { out, hs };
   };
 
-  // 1. Если человек выделил текст мышью — берём именно его.
-  const selection = String(window.getSelection() || "");
-  if (norm(selection).length >= 200) {
-    paragraphs = selection.split(/\n+/).map(norm).filter(Boolean);
-  } else {
-    // 2. Правило для известного сайта
-    const rule = SITES.find((r) => r.host.test(host));
-    const root = rule && document.querySelector(rule.root);
-    if (root) {
-      const { out, hs } = collect(root, rule.blocks, rule.skip);
-      if (out.join("").length >= 150) {
-        paragraphs = out;
-        heads.push(...hs);
-      }
+  // 1. Правило для известного сайта
+  const rule = SITES.find((r) => r.host.test(host));
+  const root = rule && document.querySelector(rule.root);
+  if (root) {
+    const { out, hs } = collect(root, rule.blocks, rule.skip);
+    if (out.join("").length >= 150) {
+      paragraphs = out;
+      heads.push(...hs);
     }
-    // 3. Иначе выделяем статью автоматически (тот же алгоритм, что в «режиме чтения» Firefox).
-    if (!paragraphs.length) {
-      let parsed = null;
-      try {
-        parsed = new Readability(document.cloneNode(true), { serializer: (el) => el }).parse();
-      } catch (e) {
-        parsed = null;
+  }
+  // 2. Иначе выделяем статью автоматически (тот же алгоритм, что в «режиме чтения» Firefox).
+  if (!paragraphs.length) {
+    let parsed = null;
+    try {
+      parsed = new Readability(document.cloneNode(true), { serializer: (el) => el }).parse();
+    } catch (e) {
+      parsed = null;
+    }
+    if (parsed && parsed.content) {
+      const { out, hs } = collect(parsed.content, "p, li, blockquote, h2, h3, h4, pre");
+      paragraphs = out;
+      heads.push(...hs);
+      if (!paragraphs.length) {
+        paragraphs = (parsed.textContent || "").split(/\n+/).map(norm).filter(Boolean);
       }
-      if (parsed && parsed.content) {
-        const { out, hs } = collect(parsed.content, "p, li, blockquote, h2, h3, h4, pre");
-        paragraphs = out;
-        heads.push(...hs);
-        if (!paragraphs.length) {
-          paragraphs = (parsed.textContent || "").split(/\n+/).map(norm).filter(Boolean);
-        }
-        if (!title) title = norm(parsed.title);
-        byline = norm(parsed.byline);
-      }
+      if (!title) title = norm(parsed.title);
+      byline = norm(parsed.byline);
     }
   }
 
@@ -176,7 +170,7 @@
 
   const length = paragraphs.reduce((n, p) => n + p.length, 0);
   if (length < 150) {
-    return { error: "Не удалось найти текст статьи. Выделите нужный текст мышью и нажмите кнопку ещё раз." };
+    return { error: "Не удалось найти текст статьи на этой странице." };
   }
   return { title, url: location.href.split("#")[0], site, date, author, paragraphs, heads: keptHeads };
 })();
