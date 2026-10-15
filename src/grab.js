@@ -2,8 +2,8 @@
 // Возвращает {title, url, site, date, author, paragraphs, heads} или {error}.
 (() => {
   const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
-  const meta = (q) => {
-    const el = document.querySelector(q);
+  const meta = (q, root = document) => {
+    const el = root.querySelector(q);
     return el ? norm(el.getAttribute("content")) : "";
   };
   const host = location.hostname.replace(/^www\./, "");
@@ -11,16 +11,18 @@
   // Правила для отдельных сайтов: где лежит текст статьи. Если правило не сработало — Readability.
   const SITES = [
     {
-      host: /(^|\.)ria\.ru$/,
+      // РИА и сайты на той же платформе «Россия сегодня» (Прайм, Спутник)
+      host: /(^|\.)(ria\.ru|1prime\.ru|sputnik[\w.-]*)$/,
       root: ".article__body",
+      title: ".article__title", // у Прайма h1 — это подзаголовок
       blocks: ".article__text, .article__quote-text, h2, h3, li",
-      skip: ".article__summary, [data-type=banner], [data-type=article], [data-type=media]",
+      skip: ".article__summary, [data-type=banner], [data-type=article], [data-type=media], [data-type=video], .media__video, .video-js",
     },
     // у НТВ в том же блоке лежат теги-ссылки и список других новостей (li) — берём только абзацы
     { host: /(^|\.)ntv\.ru$/, root: ".news-content__body", blocks: "h2, h3, p, blockquote" },
     { host: /(^|\.)interfax\.ru$/, root: "article[itemprop=articleBody]", blocks: "p, li, blockquote, h2, h3" },
     {
-      host: /(^|\.)rt\.com$/,
+      host: /(^|\.)(rt\.com|russiatoday\.ru)$/, // RT переехал на russiatoday.ru, старый адрес тоже работает
       root: ".article",
       blocks: ".article__summary, .article__text p, .article__text li, .article__text blockquote, .article__text h2, .article__text h3",
       skip: ".rtcode",
@@ -29,11 +31,24 @@
 
   // Служебные строки сайтов, которые не относятся к тексту статьи
   const JUNK = [
+    /^[\d\s.,:;+()\-–—%]+$/, // только цифры: счётчики просмотров, телефоны, «4.7», «96»
+    /^(\d{4}-\d{2}-\d{2}T\S+\s*)+$/, // служебные метки времени «2026-10-15T08:21:07+10:00»
+    /^(https?:\/\/|www\.)\S+$/, // голая ссылка вместо текста
+    /^[\w.+-]+@[\w-]+\.[\w.-]+$/, // голый e-mail
     /^Краткий пересказ от РИА ИИ/,
+    /^©/, // подпись фотобанка «© РИА Новости / …»
+    /Перейти в медиабанк/,
+    /^((Дзен|МАКС|Макс|Telegram|VK|ВКонтакте)\s*){2,}$/i, // ряд кнопок соцсетей
+    /^Выделить главное$/,
+    /^(Вкл|Выкл)$/,
+    /подпишись на эти каналы/i,
+    /теперь в MAX!?$/i,
+    /^(Сегодня|Вчера),?\s+(в\s+)?\d{1,2}:\d{2}$/i,
     /^Читать .{2,30} в$/,
     /^\d[\d\s]* просмотр/,
     /^\d{1,2}:\d{2} \d{2}\.\d{2}\.\d{4}/, // «13:51 07.10.2026 (обновлено …)»
     /^\d{1,2} [а-я]+ \d{4}, \d{1,2}:\d{2}$/, // «8 октября 2026, 10:04»
+    /^(\d{1,2}:\d{2}\s+)?Пропустить(\s+\d+)?$/, // кнопка видеоплеера
     /^Короткая ссылка/,
     /^Ошибка в тексте\?/,
     /^Подписывайтесь на (наш|канал)/,
@@ -41,16 +56,55 @@
     /^Оставайтесь на связи с /,
     /^Добавить .{2,20} в избранные источники/,
     /^(Группа |Канал )?НТВ (в|во|«)/,
-    /^(Фото|Видео|Скриншот|Источник фото)\s*:/,
+    /^Telegram-канал /,
+    /^Канал о бизнесе, финансах/,
+    /читайте в подписке/i,
+    /^Материал дополняется\.?$/,
+    /^(Фото|Видео|Скриншот|Источник фото|Иллюстрация)\s*[:—–-]/i,
+    /^(Фото|Видео)\s+[^.!?]{0,90}$/i, // короткая подпись «Фото пресс-службы правительства края»
   ];
+  // Строки про cookie — только если строка короткая (баннер), а не абзац статьи о cookie
+  const COOKIE = /cookie|куки/i;
   // Строки, после которых текст статьи заканчивается (дальше теги, ссылки, реклама)
-  const TAIL = /^(Рекомендуем|Теги|Авторы|Персоны|Картина дня|Сегодня в СМИ|Ранее на эту тему|Читайте также|Материалы по теме)\s*:?$/;
+  const TAIL = /^(Рекомендуем|Теги|Авторы|Персоны|Картина дня|Сегодня в СМИ|Ранее на эту тему|Читайте также|Материалы по теме|Подробнее)\s*:?$/;
   // подпись к фото: «Владимир Зеленский (Фото: … / Getty Images)»
   const CAPTION = /\((Фото|Видео|Кадр)\s*:[^)]*\)$/;
 
+  // ---------- какую статью брать ----------
+  // На сайтах с «бесконечной лентой» на странице несколько статей подряд. Берём ту,
+  // что сейчас на экране, — вместе с её заголовком, датой и адресом.
+  const visible = (el) => {
+    const r = el.getBoundingClientRect();
+    return Math.max(0, Math.min(r.bottom, innerHeight) - Math.max(r.top, 0));
+  };
+  // h1 в шапке сайта — это логотип («Агентство деловых новостей …»), а не заголовок статьи.
+  // Шапку статьи (<header> внутри статьи, как у РБК) при этом не трогаем.
+  const ARTICLE_SEL = 'article, main, [itemtype*="Article"], [class*="article" i], [class*="news-detail" i]';
+  const isSiteHeader = (h) => {
+    const hd = h.closest("header");
+    return !!hd && !hd.closest(ARTICLE_SEL) && !hd.matches(ARTICLE_SEL);
+  };
+  const realH1 = (root) =>
+    [...root.querySelectorAll("h1")].find((h) => !h.closest('nav, a, [class*="logo" i]') && !isSiteHeader(h) && norm(h.textContent)) || null;
+  let cands = [...document.querySelectorAll('article, [itemtype*="Article"], .article')].filter(
+    (el) => el.querySelector("h1, h2") && norm(el.textContent).length > 500
+  );
+  cands = cands.filter((el) => cands.filter((o) => o !== el && el.contains(o)).length < 2); // обёртка ленты — не статья
+  cands = cands.filter((el) => !cands.some((o) => o !== el && o.contains(el))); // из вложенных берём внешний
+  const multi = cands.length > 1;
+  // одна статья на странице: блоком статьи считаем только тот, где стоит главный заголовок,
+  // иначе это может оказаться анонс соседнего материала
+  const mainH1 = realH1(document);
+  const scope = multi
+    ? cands.reduce((a, b) => (visible(b) > visible(a) ? b : a))
+    : cands[0] && mainH1 && cands[0].contains(mainH1) ? cands[0] : null;
+  // блок, в котором ищем дату текстом: статья, а не лента соседних новостей сбоку
+  const dateArea = scope || cands[0] || null;
+  const area = multi ? scope : document; // где искать заголовок, дату, текст
+
   // ---------- метаданные: JSON-LD, meta-теги ----------
   const ld = [];
-  for (const s of document.querySelectorAll('script[type="application/ld+json"]')) {
+  for (const s of area.querySelectorAll('script[type="application/ld+json"]')) {
     try {
       const walk = (o) => {
         if (Array.isArray(o)) o.forEach(walk);
@@ -69,25 +123,61 @@
   const article = ld.find((o) => /Article/.test(String(o["@type"])) && o.datePublished) || ld.find((o) => o.datePublished) || {};
 
   const site = meta('meta[property="og:site_name"]') || host;
-  // Дата: берём первый источник, который удаётся разобрать. РИА пишет в meta «20261007T1351» —
-  // такой формат JavaScript не понимает, поэтому приводим его к обычному виду.
-  let date = "";
+
+  // ---------- дата ----------
+  // Сайты пишут дату по-разному: «20261007T1351» (РИА), «2026-10-15T06:06+0300» (Прайм),
+  // «2026-10-8 13:23» (RT). Приводим к виду, который понимает JavaScript.
+  const p2 = (n) => String(n).padStart(2, "0");
   const toDate = (s) => {
-    const m = String(s || "").trim().match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})$/);
-    const d = new Date(m ? `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}` : String(s || "").trim());
-    return s && !isNaN(d) ? d : null;
+    s = String(s || "").trim();
+    if (!s) return null;
+    let m = s.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})$/);
+    if (m) s = `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}`;
+    m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})[T ](\d{1,2}):(\d{2})(:\d{2}(\.\d+)?)?\s*(Z|[+-]\d{2}:?\d{2})?$/);
+    if (m) {
+      const tz = m[8] ? (m[8] === "Z" ? "Z" : m[8].replace(/^([+-]\d{2}):?(\d{2})$/, "$1:$2")) : "";
+      s = `${m[1]}-${p2(m[2])}-${p2(m[3])}T${p2(m[4])}:${m[5]}${m[6] || ":00"}${tz}`;
+    }
+    const d = new Date(s);
+    return isNaN(d) || d.getFullYear() < 2000 ? null : d;
   };
-  const published = [
-    meta('meta[property="article:published_time"]'),
-    meta('meta[itemprop="datePublished"]'),
-    article.datePublished,
-    meta('meta[name="mediator_published_time"]'),
-  ].map(toDate).find(Boolean);
-  if (published) {
-    const p = (n) => String(n).padStart(2, "0");
-    const d = published;
-    date = `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()}, ${p(d.getHours())}:${p(d.getMinutes())}`;
-  }
+  const fmt = (d) => `${p2(d.getDate())}.${p2(d.getMonth() + 1)}.${d.getFullYear()}, ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+  // последний вариант — дата, написанная текстом в поле даты статьи. Ищем только в элементах,
+  // похожих на поле даты: в самом тексте статьи встречаются другие даты («22 мая 2025 года»).
+  const MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
+  const textDate = (el) => {
+    const fields = [...(el || document).querySelectorAll('time, [class*="date" i], [class*="time" i]')].slice(0, 30);
+    const t = fields.map((f) => norm(f.textContent)).filter((s) => s.length < 80).join(" | ").toLowerCase();
+    // «Сегодня, 15:12» / «Вчера в 21:40»
+    let m = t.match(/(сегодня|вчера),?\s+(?:в\s+)?(\d{1,2}):(\d{2})/);
+    if (m) {
+      const d = new Date();
+      if (m[1] === "вчера") d.setDate(d.getDate() - 1);
+      return `${p2(d.getDate())}.${p2(d.getMonth() + 1)}.${d.getFullYear()}, ${p2(m[2])}:${m[3]}`;
+    }
+    m = t.match(/(\d{1,2}):(\d{2}),?\s+(\d{2})\.(\d{2})\.(\d{4})/);
+    if (m) return `${m[3]}.${m[4]}.${m[5]}, ${p2(m[1])}:${m[2]}`;
+    m = t.match(/(\d{2})\.(\d{2})\.(\d{4}),?\s+(?:в\s+)?(\d{1,2}):(\d{2})/);
+    if (m) return `${m[1]}.${m[2]}.${m[3]}, ${p2(m[4])}:${m[5]}`;
+    m = t.match(new RegExp(`(\\d{1,2})\\s+(${MONTHS.join("|")})\\s+(\\d{4})(?:\\s*(?:г\\.|года))?(?:,?\\s+(?:в\\s+)?(\\d{1,2}):(\\d{2}))?`));
+    if (m) return `${p2(m[1])}.${p2(MONTHS.indexOf(m[2]) + 1)}.${m[3]}` + (m[4] ? `, ${p2(m[4])}:${m[5]}` : "");
+    m = t.match(/\b(\d{2})\.(\d{2})\.(20\d{2})\b/);
+    return m ? `${m[1]}.${m[2]}.${m[3]}` : "";
+  };
+  const attrOf = (el) => el && (el.getAttribute("datetime") || el.getAttribute("content"));
+  const dateSources = multi
+    ? [attrOf(scope.querySelector('[itemprop="datePublished"]')), attrOf(scope.querySelector("time[datetime]")), article.datePublished]
+    : [
+        meta('meta[property="article:published_time"]'),
+        meta('meta[itemprop="datePublished"]'),
+        article.datePublished,
+        meta('meta[name="mediator_published_time"]'),
+        attrOf(document.querySelector('[itemprop="datePublished"]')),
+        attrOf((scope || document).querySelector("time[datetime]")),
+      ];
+  const published = dateSources.map(toDate).find(Boolean);
+  // сначала ищем поле даты внутри статьи, и только потом по странице
+  const date = published ? fmt(published) : (dateArea && textDate(dateArea)) || textDate(document.querySelector("main") || document.body);
 
   // Автор: только то, что похоже на имя человека. РБК склеивает имя с должностью:
   // «Полина ДугановаСтарший редактор…» — разрезаем на стыке строчной и заглавной буквы.
@@ -96,11 +186,36 @@
     [...new Set(norm(s).replace(/([а-яёa-z])([А-ЯЁA-Z])/g, "$1|$2").split(/\s*[|,;]\s*|\s+и\s+/).filter((x) => NAME.test(x)))].join(", ");
   const ldAuthor = [].concat(article.author || []).map((a) => (typeof a === "string" ? a : a.name || "")).join(", ");
 
-  const h1 = document.querySelector("h1");
-  let title = norm(h1 && h1.textContent) || meta('meta[property="og:title"]') || norm(document.title);
+  // ---------- заголовок и адрес ----------
+  const rule = SITES.find((r) => r.host.test(host));
+  let title;
+  let url = location.href.split("#")[0];
+  if (multi) {
+    const h =
+      (rule && rule.title && scope.querySelector(rule.title)) || realH1(scope) || scope.querySelector(".article__title") || scope.querySelector("h1, h2");
+    title = norm(h && h.textContent);
+    const own = scope.getAttribute("data-url") || attrOf(scope.querySelector('[itemprop="mainEntityOfPage"]')) || "";
+    try {
+      if (own && !/\.(jpe?g|png|webp|gif)(\?|$)/i.test(own)) url = new URL(own, location.href).href.split("#")[0];
+    } catch (e) {
+      /* оставляем адрес страницы */
+    }
+  } else {
+    const h = (rule && rule.title && document.querySelector(rule.title)) || mainH1;
+    title =
+      norm(h && h.textContent) ||
+      meta('meta[property="og:title"]') ||
+      norm(document.title).replace(/\s+[—–|-]\s+[^—–|]{2,40}$/, "");
+  }
+  // в og:title и заголовке вкладки к названию часто приписан сайт: «… | Чеснок», «… — РБК»
+  for (const name of [site, meta('meta[property="og:site_name"]')].filter((x) => x && x.length > 1)) {
+    const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    title = title.replace(new RegExp(`\\s+[|—–-]\\s+${esc}\\s*$`, "i"), "");
+  }
   let paragraphs = [];
   const heads = []; // индексы абзацев-подзаголовков
   let byline = "";
+  let fromRule = false; // текст взят по правилу сайта — ему можно быть короче
 
   // собирает «листовые» блоки из контейнера, чтобы абзацы не повторялись
   const collect = (root, blocks, skip) => {
@@ -109,6 +224,9 @@
       if (el.querySelector(blocks)) continue;
       if (skip && el.closest(skip)) continue;
       const t = norm(el.textContent);
+      // блок, весь текст которого — ссылки, это список «другие новости», а не абзац статьи
+      const linked = norm([...el.querySelectorAll("a")].map((a) => a.textContent).join(" "));
+      if ((t.length < 200 && linked.length >= t.length * 0.9) || (t.length < 150 && linked.length >= t.length * 0.6)) continue;
       if (t.length > 1 && t !== out[out.length - 1]) {
         if (/^H[2-4]$/.test(el.tagName) && out.length) hs.push(out.length);
         out.push(t);
@@ -116,61 +234,114 @@
     }
     return { out, hs };
   };
+  const NOT_ARTICLE =
+    'aside, nav, footer, #comments, [class*="comment" i], [class*="news-list" i], [class*="related" i], [class*="recommend" i], [class*="read-also" i], [class*="readmore" i], [class*="more-news" i], [class*="popular" i]';
+  // Readability по отдельному документу: по всей странице или только по выбранной статье.
+  // visibleOnly: убираем всё, что браузер не показывает (скрытые CSS-классом блоки), — у EastRussia
+  // там лежат полные тексты бюллетеней, и Readability принимал их за статью.
+  const readable = (node, visibleOnly) => {
+    let doc, src, copy;
+    if (node === document) {
+      doc = document.cloneNode(true);
+      src = document.body;
+      copy = doc.body;
+    } else {
+      doc = document.implementation.createHTMLDocument(title || "");
+      copy = doc.importNode(node, true);
+      doc.body.appendChild(copy);
+      src = node;
+    }
+    if (visibleOnly && src && copy) {
+      const a = src.getElementsByTagName("*"), b = copy.getElementsByTagName("*");
+      const drop = [];
+      for (let i = 0; i < a.length && i < b.length; i++) {
+        if (a[i].hidden) drop.push(b[i]);
+        else {
+          const cs = getComputedStyle(a[i]);
+          if (cs.display === "none" || cs.visibility === "hidden") drop.push(b[i]);
+        }
+      }
+      drop.forEach((n) => n.remove());
+    }
+    // Списки других новостей, «читают сейчас», комментарии — Readability иногда цепляет их к статье
+    // (у Байкал-дейли они лежат внутри блока статьи). Убираем их только после прохода по скрытым
+    // элементам: тот идёт по странице и копии параллельно, и удаление раньше сбило бы соответствие.
+    // Блок с заголовком статьи не трогаем.
+    for (const el of [...copy.querySelectorAll(NOT_ARTICLE)]) if (!el.querySelector("h1")) el.remove();
+    try {
+      return new Readability(doc, { serializer: (el) => el }).parse();
+    } catch (e) {
+      return null;
+    }
+  };
+  const fromReadability = (node) => {
+    // сначала только видимое; если так текста не набралось (сайт прячет часть статьи) — всё
+    let parsed = readable(node, true);
+    if (!parsed || !parsed.content || norm(parsed.textContent).length < 150) parsed = readable(node, false);
+    if (!parsed || !parsed.content) return false;
+    const { out, hs } = collect(parsed.content, "p, li, blockquote, h2, h3, h4, pre");
+    paragraphs = out.length ? out : (parsed.textContent || "").split(/\n+/).map(norm).filter(Boolean);
+    heads.length = 0;
+    heads.push(...(out.length ? hs : []));
+    if (!title) title = norm(parsed.title);
+    byline = norm(parsed.byline);
+    return paragraphs.join("").length >= 150;
+  };
 
-  // 1. Правило для известного сайта
-  const rule = SITES.find((r) => r.host.test(host));
-  const root = rule && document.querySelector(rule.root);
+  // 1. Правило для известного сайта (внутри выбранной статьи, если их на странице несколько).
+  //    Порог ниже, чем у Readability: у «молний» РИА весь текст — одна короткая фраза.
+  const root = rule && area.querySelector(rule.root);
   if (root) {
     const { out, hs } = collect(root, rule.blocks, rule.skip);
-    if (out.join("").length >= 150) {
+    if (out.join("").length >= 60) {
       paragraphs = out;
       heads.push(...hs);
+      fromRule = true;
     }
   }
-  // 2. Иначе выделяем статью автоматически (тот же алгоритм, что в «режиме чтения» Firefox).
+  // 2. Иначе Readability (алгоритм «режима чтения» Firefox): сначала только по блоку статьи —
+  //    так в текст не попадают соседние материалы и врезки; если этого мало — по всей странице.
+  //    При нескольких статьях на странице всю страницу не берём: получится чужой текст.
   if (!paragraphs.length) {
-    let parsed = null;
-    try {
-      parsed = new Readability(document.cloneNode(true), { serializer: (el) => el }).parse();
-    } catch (e) {
-      parsed = null;
-    }
-    if (parsed && parsed.content) {
-      const { out, hs } = collect(parsed.content, "p, li, blockquote, h2, h3, h4, pre");
-      paragraphs = out;
-      heads.push(...hs);
-      if (!paragraphs.length) {
-        paragraphs = (parsed.textContent || "").split(/\n+/).map(norm).filter(Boolean);
-      }
-      if (!title) title = norm(parsed.title);
-      byline = norm(parsed.byline);
-    }
+    if (!(scope && fromReadability(scope)) && !multi) fromReadability(document);
   }
 
   const author =
-    cleanAuthor(meta('meta[name="mediator_author"]')) ||
+    (multi ? "" : cleanAuthor(meta('meta[name="mediator_author"]'))) ||
     cleanAuthor(ldAuthor) ||
-    cleanAuthor(meta('meta[name="author"]')) ||
-    cleanAuthor(meta('meta[property="article:author"]')) ||
+    (multi ? "" : cleanAuthor(meta('meta[name="author"]'))) ||
+    (multi ? "" : cleanAuthor(meta('meta[property="article:author"]'))) ||
     cleanAuthor(byline);
 
   // ---------- чистка: служебные строки, повтор заголовка, «хвост» страницы ----------
-  const titles = new Set([title, meta('meta[property="og:title"]'), norm(article.headline), author].filter(Boolean));
+  const titles = new Set([title, multi ? "" : meta('meta[property="og:title"]'), norm(article.headline), author].filter(Boolean));
   const kept = [], keptHeads = [];
   const headSet = new Set(heads);
   for (let i = 0; i < paragraphs.length; i++) {
     const t = paragraphs[i];
     if (TAIL.test(t) && kept.length) break;
     if (titles.has(t) || JUNK.some((re) => re.test(t))) continue;
+    if (COOKIE.test(t) && t.length < 300) continue;
     if (CAPTION.test(t) && t.length < 250) continue;
+    if (kept.includes(t)) continue; // повтор того же абзаца (скрытая разметка дублирует текст)
     if (headSet.has(i) && kept.length) keptHeads.push(kept.length);
     kept.push(t);
   }
   paragraphs = kept;
 
+  // ---------- это вообще статья? ----------
+  // Главная страница или раздел: адрес «/», либо заголовок — это просто название сайта.
+  const lower = (s) => norm(s).toLowerCase();
+  const siteNames = [site, meta('meta[property="og:site_name"]'), host.split(".")[0]].map(lower).filter((s) => s.length > 3);
+  const titleIsSite = siteNames.some((s) => lower(title) === s || (lower(title).includes(s) && lower(title).length < s.length + 35));
+  const looksLikeHome = /^\/?(index\.\w+)?$/.test(location.pathname) || (titleIsSite && !published && meta('meta[property="og:type"]') !== "article");
+  if (looksLikeHome) {
+    return { error: "Похоже, это не страница статьи, а главная или раздел сайта. Откройте саму статью и нажмите кнопку ещё раз." };
+  }
+
   const length = paragraphs.reduce((n, p) => n + p.length, 0);
-  if (length < 150) {
+  if (length < (fromRule ? 60 : 150)) {
     return { error: "Не удалось найти текст статьи на этой странице." };
   }
-  return { title, url: location.href.split("#")[0], site, date, author, paragraphs, heads: keptHeads };
+  return { title, url, site, date, author, paragraphs, heads: keptHeads };
 })();
