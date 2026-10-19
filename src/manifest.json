@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Газета",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Собирает статьи с открытых страниц и формирует из них газету в формате Word.",
   "permissions": ["activeTab", "scripting", "storage", "unlimitedStorage"],
   "action": {

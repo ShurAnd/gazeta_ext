@@ -37,8 +37,189 @@ const Docx = (() => {
       .join("") +
     "</w:tbl>";
 
+  // ---------- номера страниц для содержания ----------
+  // Word, если попросить его обновить поля при открытии, делает это до разбивки на страницы —
+  // и во всех «Стр.N» получается 1. Поэтому номер страницы каждой статьи считаем сами: повторяем,
+  // как Word делит текст на строки (ширину слов меряем тем же шрифтом Times New Roman) и строки —
+  // на страницы. Номер пишется готовым значением поля PAGEREF; если где-то расчёт разойдётся
+  // с Word, Ctrl+A и F9 в Word пересчитают номера точно.
+  // Размеры — в пунктах, измерены по Word на этом шаблоне.
+  const TW = 20; // твипов в пункте
+  // высота строки Times New Roman при одинарном интервале: (ascent + descent + lineGap) / emSize = 2355/2048
+  // кегля. Округлять до 1,15 нельзя: за страницу набегает разница, и Word вмещает строку, а расчёт — нет.
+  const LINE = 2355 / 2048;
+  const BODY_W = TEXT_WIDTH / TW, TOC_HEAD_W = PAGE_NO_TAB / TW, INDENT = 709 / TW;
+  const PAGE_BOTTOM = (16838 - 1134) / TW;
+  const TOP_FIRST = 1134 / TW;
+  // со 2-й страницы текст ниже: шапка с названием организации (строки 9 пт + пустой абзац) не влезает в поле
+  const topNext = (orgCount) => Math.max(TOP_FIRST, (709 + (orgCount + 1) * 9 * LINE * TW) / TW);
+
+  // mode (для проверки): "kern" — как браузер по умолчанию, "nokern" — без кернинга,
+  // "chars" — сумма ширин отдельных букв с округлением до твипа
+  function measurer(mode = "chars") {
+    let ctx = null;
+    try {
+      const canvas = typeof OffscreenCanvas !== "undefined" ? new OffscreenCanvas(1, 1) : document.createElement("canvas");
+      ctx = canvas.getContext("2d");
+    } catch (e) {
+      ctx = null;
+    }
+    if (!ctx) return null;
+    if (mode !== "kern" && "fontKerning" in ctx) ctx.fontKerning = "none";
+    const cache = new Map();
+    const width = (text, font) => {
+      const key = font + "\u0001" + text;
+      if (!cache.has(key)) {
+        ctx.font = font;
+        cache.set(key, ctx.measureText(text).width * 0.75); // пиксели → пункты
+      }
+      return cache.get(key);
+    };
+    return (text, size, bold, italic) => {
+      const font = `${italic ? "italic " : ""}${bold ? "bold " : ""}${size}pt "Times New Roman"`;
+      if (mode !== "chars") return width(text, font);
+      let w = 0;
+      for (const ch of text) w += Math.round(width(ch, font) * TW) / TW;
+      return w;
+    };
+  }
+  // сколько строк займёт абзац: Word заполняет строку словами, пока следующее помещается;
+  // переносить строку можно на пробелах и после дефиса или тире
+  function lineCount(text, width, indent, size, bold, italic, measure) {
+    const words = String(text || "").replace(/\s+/g, " ").trim().split(" ").filter(Boolean);
+    if (!words.length) return 1;
+    const space = measure(" ", size, bold, italic);
+    let lines = 1, x = indent, start = indent;
+    for (const word of words) {
+      word.split(/(?<=[-–—])/).forEach((piece, k) => {
+        const w = measure(piece, size, bold, italic);
+        const gap = k === 0 && x > start ? space : 0;
+        if (x === start || x + gap + w <= width + 0.01) x += gap + w;
+        else {
+          lines++;
+          start = 0;
+          x = w;
+        }
+        while (x > width + 0.01) {
+          // слово длиннее строки (ссылка): Word режет его по буквам
+          lines++;
+          x -= width;
+        }
+      });
+    }
+    return lines;
+  }
+
+  // страница, на которой окажется заголовок каждой статьи
+  // trace (для проверки по Word): сюда пишется каждый абзац — {lines, page, y}
+  function pagesOf(p, measure, trace) {
+    const org = orgLines(p.org);
+    const items = []; // {lines, lh, keep, mark}
+    const add = (text, o) => {
+      const size = o.size || 14;
+      const width = o.width || BODY_W;
+      const indent = o.indent === undefined ? INDENT : o.indent;
+      items.push({ lines: lineCount(text, width, indent, size, o.bold, o.italic, measure), lh: size * LINE, keep: !!o.keep, mark: o.mark });
+    };
+    const blank = (keep) => items.push({ lines: 1, lh: 14 * LINE, keep: !!keep });
+
+    // первая страница: таблица с названием организации, пустая строка, название, дата (кегль 26 + 15 пт после)
+    const titleLines = lineCount(p.title, BODY_W, INDENT, 26, true, false, measure);
+    let y = TOP_FIRST + org.length * 14 * LINE + (2 + titleLines) * 26 * LINE + 3 * 15 + 8.1;
+
+    p.entries.forEach((e, i) => {
+      for (const s of [e.site, e.date]) if (s && s.trim()) add(s, { size: 13.5, bold: true, indent: 0, keep: true });
+      add(e.title, { size: 13.5, bold: true, indent: 0, width: TOC_HEAD_W, keep: true });
+      for (const k of e.lead) add(e.paragraphs[k], { size: 13.5, bold: true, italic: true });
+      blank(true);
+    });
+    blank(false);
+    items.push({ pageBreak: true });
+
+    p.entries.forEach((e, i) => {
+      if (i > 0) blank(false), blank(false);
+      for (const s of [e.site, e.date, e.author]) if (s && s.trim()) add(s, { bold: true, indent: 0, keep: true });
+      blank(true);
+      add(e.title, { bold: true, indent: 0, keep: true, mark: i });
+      blank(true);
+      const lead = new Set(e.lead), heads = new Set(e.heads);
+      e.paragraphs.forEach((t, k) => {
+        if (!t.trim()) return;
+        if (lead.has(k)) add(t.trim(), { bold: true, italic: true });
+        else if (heads.has(k)) add(t.trim(), { bold: true, keep: true });
+        else add(t.trim(), {});
+      });
+    });
+
+    // раскладываем строки по страницам
+    const top = topNext(org.length);
+    const pages = [];
+    let page = 1;
+    const newPage = () => {
+      page++;
+      y = top;
+    };
+    const height = (it) => it.lines * it.lh;
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      if (it.pageBreak) {
+        // Разрыв страницы — отдельный абзац; он остаётся на старой странице, новая начинается сразу
+        // со статьи. Но если для его строки места внизу уже нет, он сам переезжает на следующую
+        // страницу — и статьи начинаются ещё на страницу дальше.
+        if (y + 14 * LINE > PAGE_BOTTOM + 0.01) newPage();
+        newPage();
+        continue;
+      }
+      // «не отрывать от следующего»: абзац, цепочка таких же за ним и первая строка следующего
+      // должны оказаться на одной странице; если не помещаются — вся цепочка уходит на новую
+      if (it.keep && y > top) {
+        let need = 0, j = i;
+        while (j < items.length && items[j].keep) need += height(items[j++]);
+        // от следующего абзаца на этой странице должно остаться не меньше двух строк (запрет висячих
+        // строк), а абзац до трёх строк Word вообще не разрывает
+        if (j < items.length && !items[j].pageBreak) need += (items[j].lines <= 3 ? items[j].lines : 2) * items[j].lh;
+        if (y + need > PAGE_BOTTOM + 0.01 && top + need <= PAGE_BOTTOM) newPage();
+      }
+      // Строки абзаца по страницам с запретом висячих строк (в Word включён по умолчанию):
+      // первая строка абзаца не остаётся одна внизу страницы, последняя — одна вверху следующей.
+      let left = it.lines, first = true;
+      while (left > 0) {
+        const fit = Math.floor((PAGE_BOTTOM + 0.01 - y) / it.lh);
+        let k = Math.min(fit, left);
+        if (k < left) {
+          if (left - k === 1) k--; // последняя строка одна на новой странице
+          if (first && k === 1) k = 0; // первая строка одна внизу
+          if (k < 0) k = 0;
+          if (k === 0 && y <= top) k = Math.max(fit, 1); // абзац длиннее страницы
+        }
+        if (k > 0) {
+          if (first) {
+            if (it.mark !== undefined) pages[it.mark] = page;
+            if (trace) trace.push({ lines: it.lines, page, y: Math.round(y * 10) / 10 });
+            first = false;
+          }
+          y += k * it.lh;
+          left -= k;
+        }
+        if (left > 0) newPage();
+      }
+      if (trace) trace[trace.length - 1].endPage = page;
+    }
+    return pages;
+  }
+
   function documentXml(p) {
     let b = "";
+    // номера страниц статей для содержания (если не получилось посчитать — пусто, F9 в Word заполнит)
+    let pages = [];
+    if (p.toc !== false) {
+      try {
+        const measure = measurer();
+        if (measure) pages = pagesOf(p, measure);
+      } catch (e) {
+        pages = [];
+      }
+    }
     // ---------- первая страница: шапка ----------
     const org = orgLines(p.org).map((s) => s.toUpperCase());
     if (org.length) {
@@ -56,7 +237,7 @@ const Docx = (() => {
         for (const s of [e.site, e.date]) if (s && s.trim()) b += para("Source", run(s, SMALL));
         b += para(
           "Head",
-          `${run(e.title, SMALL)}<w:r><w:rPr>${SMALL}<w:u w:val="single"/></w:rPr><w:tab/></w:r>${run("Стр.", SMALL)}${field(`PAGEREF ${bookmark(i)} \\h`, "", SMALL)}`,
+          `${run(e.title, SMALL)}<w:r><w:rPr>${SMALL}<w:u w:val="single"/></w:rPr><w:tab/></w:r>${run("Стр.", SMALL)}${field(`PAGEREF ${bookmark(i)} \\h`, pages[i] ? String(pages[i]) : "", SMALL)}`,
           `<w:tabs><w:tab w:val="left" w:pos="${PAGE_NO_TAB}"/></w:tabs><w:ind w:right="${TEXT_WIDTH - PAGE_NO_TAB}"/><w:jc w:val="left"/>`
         );
         for (const k of e.lead) b += para("Lead", run(e.paragraphs[k], SMALL));
@@ -170,8 +351,9 @@ const Docx = (() => {
       ["_rels/.rels", `${HEAD}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${REL}/officeDocument" Target="word/document.xml"/></Relationships>`],
       ["word/document.xml", documentXml(p)],
       ["word/styles.xml", stylesXml()],
-      // updateFields: Word при открытии пересчитает номера страниц «Стр.N» в содержании
-      ["word/settings.xml", `${HEAD}<w:settings ${NS}><w:updateFields w:val="true"/></w:settings>`],
+      // без updateFields: Word обновляет поля при открытии до разбивки на страницы и пишет «Стр.1»
+      // во всём содержании — номера страниц уже посчитаны при сборке (pagesOf)
+      ["word/settings.xml", `${HEAD}<w:settings ${NS}></w:settings>`],
       ["word/footer1.xml", footerXml()],
       ["word/footer2.xml", blankFooter()],
       ["word/header1.xml", headerXml(p)],
@@ -180,6 +362,6 @@ const Docx = (() => {
     ]);
   }
 
-  return { build };
+  return { build, pagesOf, measurer };
 })();
 if (typeof module === "object") module.exports = Docx;
