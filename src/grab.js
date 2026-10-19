@@ -52,7 +52,10 @@
     /теперь в MAX!?$/i,
     /^(Сегодня|Вчера),?\s+(в\s+)?\d{1,2}:\d{2}$/i,
     /^Чита(ть|йте) .{2,30} в$/, // «Читайте Monocle.ru в» (дальше — значки соцсетей)
-    /^(Getty Images|Global Look Press|Shutterstock|Reuters|AP Photo|AFP|EPA|Unsplash|Pixabay|Freepik|Legion-Media|Фотобанк Лори)(\s*[\/|,].*)?$/i, // подпись фотоагентства
+    /^(Getty Images|Global Look Press|Shutterstock|AP Photo|Unsplash|Pixabay|Freepik|Legion-Media|Фотобанк Лори)(\s*[\/|,].*)?$/i, // подпись фотобанка
+    // Reuters, AFP, AP, EPA — ещё и информагентства: одно слово «Reuters» бывает подписью цитаты
+    // («Что пишут СМИ» у Известий), поэтому подписью к фото считаем только «Reuters / Иван Петров»
+    /^(Reuters|AFP|AP|EPA)\s*[\/|]\s*[^.!?]{1,60}$/i, // без запятой: «Reuters, ссылаясь на…» — это предложение
     /^\d[\d\s]* просмотр/,
     /^\d{1,2}:\d{2} \d{2}\.\d{2}\.\d{4}/, // «13:51 07.10.2026 (обновлено …)»
     /^\d{1,2} [а-я]+ \d{4}, \d{1,2}:\d{2}$/, // «8 октября 2026, 10:04»
@@ -81,9 +84,10 @@
   // «Фото t.me/brd_region», «Изображение сгенерировано с помощью ИИ / …», «… Фото: Пруфы».
   // Короткая строка, которая начинается с такого слова и не похожа на обычное предложение.
   const PHOTO_START = /^(Фото|Видео|Скриншот|Иллюстрация|Изображение|Инфографика|Кадр|Автор фото|Источник фото|На фото|Фотограф)(?=[\s:—–-]|$)/i;
-  const isCaption = (t) =>
-    (t.length < 160 && PHOTO_START.test(t) && (/[:\/©]/.test(t) || !/[.!?…»"]$/.test(t))) ||
-    (t.length < 250 && /(Фото|Видео|Источник)\s*:\s*[^.!?]{1,60}$/i.test(t));
+  const isCaption = (t) => t.length < 160 && PHOTO_START.test(t) && (/[:\/©]/.test(t) || !/[.!?…»"]$/.test(t));
+  // подпись снимка в конце абзаца: «… сообщил губернатор. Фото: пресс-служба». Отрезаем только её;
+  // если до неё остаётся совсем короткая строка («Глава региона Иван Петров.») — это подпись к фото целиком.
+  const CREDIT_TAIL = /\s*(Фото|Видео|Источник)\s*:\s*[^.!?]{1,60}$/i;
   // призывы подписаться и ссылки на соцсети в конце статьи
   const PROMO =
     /^(Чтобы (первыми|быть в курсе|не пропустить)|Подписывайтесь|Подпишитесь|Следите за|Читайте нас|Все (самое |самые )?(важн|главн)\S* (новост|и оперативн)|Больше (новостей|интересного|материалов)|Самое (актуальное|интересное) в|Понравилась (новость|статья)|Поделиться|Увидели опечатку|Нашли (ошибку|опечатку)|Оперативные публикации)/i;
@@ -277,10 +281,14 @@
   // Имя — целиком кириллицей или целиком латиницей: «Губернiя Daily» (с латинской i) — не имя.
   const NAME = /^([А-ЯЁ][а-яё-]+(\s+[А-ЯЁ][а-яё-]+){1,2}|[A-Z][a-z-]+(\s+[A-Z][a-z-]+){1,2})$/;
   const unCaps = (s) => s.replace(/[А-ЯЁA-Z]{2,}(-[А-ЯЁA-Z]{2,})?/g, (w) => w[0] + w.slice(1).toLowerCase());
+  // Латинская буква-двойник внутри русского слова — опечатка сайта («Бедорфаc» с латинской c).
+  // Меняем её на русскую. «Губернiя» (i в русском алфавите двойника нет) так и останется не именем.
+  const LAT = { a: "а", c: "с", e: "е", o: "о", p: "р", x: "х", y: "у", A: "А", B: "В", C: "С", E: "Е", H: "Н", K: "К", M: "М", O: "О", P: "Р", T: "Т", X: "Х" };
+  const fixMixed = (s) => s.replace(/\S+/g, (w) => (/[а-яё]/i.test(w) ? w.replace(/[aceopxyABCEHKMOPTX]/g, (ch) => LAT[ch]) : w));
   const cleanAuthor = (s) =>
     [
       ...new Set(
-        norm(s)
+        fixMixed(norm(s))
           .replace(/([а-яёa-z])([А-ЯЁA-Z])/g, "$1|$2")
           .split(/\s*[|,;]\s*|\s+и\s+/)
           .map(unCaps)
@@ -288,9 +296,12 @@
       ),
     ].join(", ");
   // имя в начале строки: «Сергей Мануков обозреватель Monocle.ru 15 октября…»
+  // Третье слово с заглавной — не всегда часть имени: «Анна Ленская Специальный корреспондент».
+  // Берём три слова, только если среднее — отчество или за третьим не идёт слово со строчной.
   const leadingName = (s) => {
     const w = norm(s).split(" ");
     for (const n of [3, 2]) {
+      if (n === 3 && !/(вич|вна|ична|инична)$/.test(w[1] || "") && /^[а-яё]/.test(w[3] || "")) continue;
       const a = cleanAuthor(w.slice(0, n).join(" "));
       if (a) return a;
     }
@@ -309,6 +320,15 @@
         const nameEl = c.querySelector('[itemprop="name"], [class*="name" i]') || c;
         const s = norm(nameEl.textContent);
         if (!s || s.length > 200 || /фото/i.test(s)) continue;
+        // имя часто лежит отдельным элементом внутри блока, рядом с должностью
+        // («Анна Ленская» + «Специальный корреспондент EastRussia.ru»)
+        if (nameEl === c) {
+          const leaf = [...c.querySelectorAll("*")]
+            .filter((e) => !e.children.length)
+            .map((e) => cleanAuthor(e.textContent))
+            .find(Boolean);
+          if (leaf) return leaf;
+        }
         const m = s.match(AUTHOR_LINE);
         const a = cleanAuthor(m ? m[4] : s) || leadingName(m ? m[4] : s);
         if (a) return a;
@@ -371,8 +391,9 @@
   // Мелкие служебные блоки внутри статьи: фото с подписями и авторами снимков (НГС, ДП, Регнум),
   // блок автора с должностью («журналист ИрСити»), счётчики, «поделиться», реклама, хлебные крошки,
   // разделители-заголовки меню (Правда ПФО). Убираем только небольшие блоки — не саму статью.
+  const MEDIA = "img, picture, video, iframe, svg, object, embed";
   const NOISE =
-    'figure, figcaption, picture, noscript, [class*="caption" i], [class*="author" i], [class*="byline" i], [class*="source" i], [class*="share" i], [class*="social" i], [class*="views" i], [class*="view-count" i], [class*="counter" i], [class*="creative" i], [class*="banner" i], [class*="advert" i], [class*="promo" i], [class*="breadcrumb" i], [class*="divider" i], [class*="subscribe" i]';
+    'figcaption, picture, noscript,[class*="caption" i], [class*="author" i], [class*="byline" i], [class*="source" i], [class*="share" i], [class*="social" i], [class*="views" i], [class*="view-count" i], [class*="counter" i], [class*="creative" i], [class*="banner" i], [class*="advert" i], [class*="promo" i], [class*="breadcrumb" i], [class*="divider" i], [class*="subscribe" i]';
   // Readability по отдельному документу: по всей странице или только по выбранной статье.
   // visibleOnly: убираем всё, что браузер не показывает (скрытые CSS-классом блоки), — у EastRussia
   // там лежат полные тексты бюллетеней, и Readability принимал их за статью.
@@ -405,8 +426,18 @@
     // элементам: тот идёт по странице и копии параллельно, и удаление раньше сбило бы соответствие.
     // Блок с заголовком статьи не трогаем.
     for (const el of [...copy.querySelectorAll(NOT_ARTICLE)]) if (!el.querySelector("h1")) el.remove();
+    // внутри цитат ничего не трогаем: подпись цитаты («Reuters», «The Washington Post») — часть текста
+    const inQuote = (el) => {
+      const f = el.closest("blockquote, figure");
+      return !!f && (f.tagName === "BLOCKQUOTE" || !f.querySelector(MEDIA));
+    };
     for (const el of [...copy.querySelectorAll(NOISE)]) {
-      if (el.isConnected && !el.querySelector("h1") && norm(el.textContent).length < 600) el.remove();
+      if (el.isConnected && !el.querySelector("h1") && !inQuote(el) && norm(el.textContent).length < 600) el.remove();
+    }
+    // <figure> убираем, только если это снимок или видео: Известия оформляют в <figure> цитаты
+    // («Что пишут СМИ»), и без этой проверки пропадала половина статьи
+    for (const el of [...copy.querySelectorAll("figure")]) {
+      if (el.isConnected && el.querySelector(MEDIA) && !el.querySelector("h1, blockquote") && norm(el.textContent).length < 600) el.remove();
     }
     try {
       return new Readability(doc, { serializer: (el) => el }).parse();
@@ -461,7 +492,13 @@
   const headSet = new Set(heads);
   let lineAuthor = "", lineDate = "";
   for (let i = 0; i < paragraphs.length; i++) {
-    const t = paragraphs[i];
+    let t = paragraphs[i];
+    if (CREDIT_TAIL.test(t)) {
+      const body = t.replace(CREDIT_TAIL, "").trim();
+      if (body.length < 120) {
+        if (t.length < 250) continue;
+      } else t = body;
+    }
     if (TAIL.test(t) && kept.length) break;
     if (titles.has(t) || JUNK.some((re) => re.test(t))) continue;
     if (siteNames.includes(lower(t))) continue; // строка — просто название сайта («dp.ru»)
